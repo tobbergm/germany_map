@@ -1,0 +1,4 @@
+# Unnoetige Zusatzordner im DEM-Paket
+tifmap/data/
+tifmap/documents/
+tifmap/metadata/
