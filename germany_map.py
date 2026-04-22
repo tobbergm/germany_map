@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import geopandas as gpd
@@ -141,6 +142,56 @@ def render_height_map_3d(height, profile, output: Path, dpi: int = 300) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
+    
+def create_files_for_blender(height: np.ndarray, profile: dict):
+    output_dir = Path("output") / "blender"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    z = np.array(height, dtype="float32")
+    valid_mask = np.isfinite(z)
+    if not np.any(valid_mask):
+        raise RuntimeError("Keine gueltigen Hoehenwerte fuer Blender-Export.")
+
+    z_min = float(np.nanmin(z))
+    z_max = float(np.nanmax(z))
+
+    z_filled = z.copy()
+    z_filled[~valid_mask] = z_min
+
+    if z_max > z_min:
+        z_norm = (z_filled - z_min) / (z_max - z_min)
+    else:
+        z_norm = np.zeros_like(z_filled, dtype="float32")
+
+    height_u16 = np.clip(np.round(z_norm * 65535.0), 0, 65535).astype("uint16")
+
+    height_png = output_dir / "height_16.png"
+    with rasterio.open(
+        height_png,
+        "w",
+        driver="PNG",
+        width=height_u16.shape[1],
+        height=height_u16.shape[0],
+        count=1,
+        dtype="uint16",
+    ) as dst:
+        dst.write(height_u16, 1)
+
+    metadata = {
+        "height_16_png": str(height_png),
+        "width": int(z.shape[1]),
+        "height": int(z.shape[0]),
+        "z_min": z_min,
+        "z_max": z_max,
+        "pixel_size_x": float(abs(profile["transform"].a)),
+        "pixel_size_y": float(abs(profile["transform"].e)),
+        "crs": str(profile.get("crs")),
+        "recommended_displacement_scale": float(z_max - z_min),
+    }
+
+    meta_path = output_dir / "terrain_meta.json"
+    meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    print(f"Blender Dateien gespeichert: {output_dir.resolve()}")
 
 
 print("load geopandas")
@@ -148,5 +199,6 @@ germany_height, profile = load_germany_geopandas()
 output_path = Path("output") / "germany_map.png"
 
 #render_height_map_2d(germany, output_path, dpi=300)
-render_height_map_3d(germany_height, profile, Path("output") / "germany_height_3d.png", dpi=320)
-print(f"Karte gespeichert: {output_path}")
+#render_height_map_3d(germany_height, profile, Path("output") / "germany_height_3d.png", dpi=320)
+#print(f"Karte gespeichert: {output_path}")
+create_files_for_blender(germany_height, profile)
