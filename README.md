@@ -4,3 +4,4 @@
 
 Die Deutschlandskarte als Höhenprofil mit Bäumen und Bevölkerung darstellen
 
+TIF map from EuroGeographics
