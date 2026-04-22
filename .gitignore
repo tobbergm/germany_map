@@ -1,4 +1,2 @@
-# Unnoetige Zusatzordner im DEM-Paket
-tifmap/data/
-tifmap/documents/
-tifmap/metadata/
+# DEM-Daten sind zu gross fuer Git
+tifmap/
