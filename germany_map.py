@@ -192,13 +192,140 @@ def create_files_for_blender(height: np.ndarray, profile: dict):
     meta_path = output_dir / "terrain_meta.json"
     meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print(f"Blender Dateien gespeichert: {output_dir.resolve()}")
+    
+    
+def load_germany_population():
+    def base():
+        
+        print("load geopandas")
+        url = "https://naturalearth.s3.amazonaws.com/10m_cultural/ne_10m_admin_0_countries.zip"
+        world = gpd.read_file(url)
+        germany_gdf = world[world["NAME_EN"] == "Germany"]
+
+        if germany_gdf.empty:
+            raise RuntimeError("Germany wurde im Datensatz nicht gefunden.")
+
+        print("done")
+        return germany_gdf
+    
+    import pandas as pd
+    from shapely.geometry import box
+
+    print("load pop")
+    df = pd.read_csv("./tifmap/Zensus2022-1km-Gitter.csv", sep=";")
+    df["Einwohner"] = pd.to_numeric(df["Einwohner"], errors="coerce").fillna(0)
+
+    # 1km-Grid Mittelpunkte -> Punkte (meist EPSG:3035)
+    pop_pts = gpd.GeoDataFrame(
+        df,
+        geometry=gpd.points_from_xy(df["x_mp_1km"], df["y_mp_1km"]),
+        crs="EPSG:3035",
+    )
+
+    # Punkte -> 1km Zellen
+    half = 500
+    pop_grid = pop_pts.copy()
+    pop_grid["geometry"] = pop_grid.geometry.apply(
+        lambda p: box(p.x - half, p.y - half, p.x + half, p.y + half)
+    )
+
+    
+    print("done")
+    germany_gdf = base().to_crs(pop_grid.crs)
+    pop_de = gpd.overlay(pop_grid, germany_gdf[["geometry"]], how="intersection")
+
+    return pop_de
 
 
-print("load geopandas")
-germany_height, profile = load_germany_geopandas()
-output_path = Path("output") / "germany_map.png"
+def create_population_heatmap_for_blender(pop_de: gpd.GeoDataFrame):
+    output_dir = Path("output") / "blender"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    x_col = "x_mp_1km"
+    y_col = "y_mp_1km"
+    v_col = "Einwohner"
+
+    grid = pop_de[[x_col, y_col, v_col]].copy()
+    grid[v_col] = np.log1p(pd.to_numeric(grid[v_col], errors="coerce").fillna(0.0))
+    grid = grid.groupby([x_col, y_col], as_index=False)[v_col].max()
+
+    xs = np.sort(grid[x_col].unique())
+    ys = np.sort(grid[y_col].unique())[::-1]
+
+    x_index = {x: i for i, x in enumerate(xs)}
+    y_index = {y: i for i, y in enumerate(ys)}
+
+    heat = np.full((len(ys), len(xs)), np.nan, dtype="float32")
+    for row in grid.itertuples(index=False):
+        heat[y_index[getattr(row, y_col)], x_index[getattr(row, x_col)]] = getattr(row, v_col)
+
+    valid = np.isfinite(heat)
+    if not np.any(valid):
+        raise RuntimeError("Keine gueltigen Populationswerte gefunden.")
+
+    vmin = float(np.nanmin(heat))
+    vmax = float(np.nanmax(heat))
+
+    heat[~valid] = vmin
+    if vmax > vmin:
+        heat_norm = (heat - vmin) / (vmax - vmin)
+    else:
+        heat_norm = np.zeros_like(heat, dtype="float32")
+
+    heat_u16 = np.clip(np.round(heat_norm * 65535.0), 0, 65535).astype("uint16")
+
+    out_png = output_dir / "population_heat_16.png"
+    with rasterio.open(
+        out_png,
+        "w",
+        driver="PNG",
+        width=heat_u16.shape[1],
+        height=heat_u16.shape[0],
+        count=1,
+        dtype="uint16",
+    ) as dst:
+        dst.write(heat_u16, 1)
+
+    # 1km -> 4km (4x4 Zellen zusammenfassen)
+    agg = 4
+    h, w = heat.shape
+    h4 = h // agg
+    w4 = w // agg
+    heat_crop = heat[: h4 * agg, : w4 * agg]
+    heat_4km = np.nansum(heat_crop.reshape(h4, agg, w4, agg), axis=(1, 3))
+
+    vmin4 = float(np.nanmin(heat_4km))
+    vmax4 = float(np.nanmax(heat_4km))
+    if vmax4 > vmin4:
+        heat_4km_norm = (heat_4km - vmin4) / (vmax4 - vmin4)
+    else:
+        heat_4km_norm = np.zeros_like(heat_4km, dtype="float32")
+
+    heat_4km_u16 = np.clip(np.round(heat_4km_norm * 65535.0), 0, 65535).astype("uint16")
+
+    out_png_4km = output_dir / "population_heat_4km_16.png"
+    with rasterio.open(
+        out_png_4km,
+        "w",
+        driver="PNG",
+        width=heat_4km_u16.shape[1],
+        height=heat_4km_u16.shape[0],
+        count=1,
+        dtype="uint16",
+    ) as dst:
+        dst.write(heat_4km_u16, 1)
+
+    print(f"Population-Heatmap (1km) gespeichert: {out_png.resolve()}")
+    print(f"Population-Heatmap (4km) gespeichert: {out_png_4km.resolve()}")
+
+
+import pandas as pd
+population_de = load_germany_population()
+create_population_heatmap_for_blender(population_de)
+#germany_height, profile = load_germany_geopandas()
+#output_path = Path("output") / "germany_map.png"
 
 #render_height_map_2d(germany, output_path, dpi=300)
 #render_height_map_3d(germany_height, profile, Path("output") / "germany_height_3d.png", dpi=320)
 #print(f"Karte gespeichert: {output_path}")
-create_files_for_blender(germany_height, profile)
+#create_files_for_blender(germany_height, profile)
